@@ -2,11 +2,11 @@
 // @name        bili-mobile-recommend
 // @namespace   Gizeta.Debris.BiliMobileRecommend
 // @description Show recommendation on PC
+// @match       *://www.bilibili.com/
 // @match       *://www.bilibili.com/index.html
 // @version     1
 // @grant       none
 // ==/UserScript==
-let lastIdx = 0;
 let frame = `
 <div id="mobile_recommend" class="zone-wrap-module report-wrap-module report-scroll-module clearfix">
   <div class="live-module clearfix">
@@ -40,7 +40,7 @@ let template = `
 </div>`;
 
 window.getFeedIndex = () => {
-  fetch(`//app.bilibili.com/x/feed/index?access_key={key}&appkey=1d8b6e7d45233436&build=0${lastIdx == 0 ? "" : "&idx=" + lastIdx}`)
+  fetch(`//app.bilibili.com/x/feed/index?access_key=ff5d443363c90baa8c55c29ab7898d9e&appkey=1d8b6e7d45233436&build=0`)
   .then(data => data.json())
   .then(data => {
     let result = [];
@@ -66,7 +66,6 @@ window.getFeedIndex = () => {
       } 
       result.push(s);
     }
-    lastIdx = data.data.pop()["idx"];
     $('#mobile_recommend .storey-box').html(result.join(''));
   }).catch(err => console.err(err));
 }
