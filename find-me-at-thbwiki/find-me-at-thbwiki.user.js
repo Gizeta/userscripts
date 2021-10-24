@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         find-me-at-thbwiki
 // @namespace    Gizeta.Debris.FindMeAtTHBWiki
-// @version      0.1
+// @version      0.1.1
 // @description  Find selection text on THBWiki
 // @author       Gizeta
 // @match        *://*/*
@@ -10,7 +10,7 @@
 
 /* jshint esversion: 6 */
 
-const API = 'https://thwiki.cc/api.php?action=query&format=json&uselang=zh&list=search&srlimit=1&srsearch=';
+const API = 'https://thwiki.cc/api.php?action=query&format=json&uselang=zh&list=search&srlimit=5&srsearch=';
 
 function getTooltipTarget(create = false) {
   const target = document.getElementById('find-me-at-thbwiki-tooltip');
@@ -34,13 +34,15 @@ function getPosition() {
   return [top, left];
 }
 
-function showTooltip(title, content) {
+function showTooltip(result) {
   const tooltip = getTooltipTarget(true);
   const [top, left] = getPosition();
   tooltip.style.display = 'block';
+  tooltip.style.fontSize = '14px';
+  tooltip.style.color = 'black';
   tooltip.style.top = `${top}px`;
   tooltip.style.left = `${left}px`;
-  tooltip.innerHTML = `<h3><a href="https://thwiki.cc/${title}" target="_blank" rel="noopener noreferrer">${title}</a></h3><div>${content}</div>`;
+  tooltip.innerHTML = result.map(([title, content]) => `<h3><a href="https://thwiki.cc/${title}" target="_blank" rel="noopener noreferrer">${title}</a></h3><div>${content}</div>`);
 }
 
 function hideToolip() {
@@ -56,7 +58,7 @@ document.body.addEventListener("mouseup", () => {
   }
   fetch(API + selection.toString().trim()).then(resp => resp.json()).then(data => {
     if (data.query && data.query.search && data.query.search.length > 0)
-      showTooltip(data.query.search[0].title, data.query.search[0].snippet);
+      showTooltip(data.query.search.map(x => [x.title, x.snippet]));
     else
       showTooltip('', 'not found');
   });
