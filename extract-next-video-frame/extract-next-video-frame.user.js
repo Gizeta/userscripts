@@ -1,12 +1,13 @@
 // ==UserScript==
-// @name        extract next video frame
+// @name        截取b站视频帧
 // @namespace   Gizeta.Debris.ExtractNextVideoFrame
 // @match       *://www.bilibili.com/video/*
 // @grant       none
-// @version     0.1.0
+// @version     0.2.0
 // @author      Gizeta
 // @description 2022/2/10 03:56:42
 // @license     MIT
+// @run-at      document-start
 // ==/UserScript==
 
 /* jshint esversion: 8 */
@@ -22,6 +23,22 @@ let videoFrames;
 let videoElem;
 let currentTime;
 let frameIndex = 0;
+
+/* hack closed ShadowDOM */
+Element.prototype._attachShadow = Element.prototype.attachShadow;
+Element.prototype.attachShadow = function(init) {
+  init['mode'] = 'open';
+  return Element.prototype._attachShadow.call(this, init);
+}
+
+/* force not to use WASM player */
+Object.defineProperty(window, '__ENABLE_WASM_PLAYER__', {
+  get() {
+    return false;
+  },
+  set(_) {},
+});
+sessionStorage.setItem('bwphevc_disable', '1');
 
 function hideLayer() {
   const layer = document.getElementById(LAYER_ID);
@@ -46,29 +63,34 @@ function createLayer() {
         "position: fixed",
         `width: ${CANVAS_WIDTH}px`,
         `height: ${CANVAS_HEIGHT}px`,
-        `top: calc(50vh - ${CANVAS_HEIGHT / 2 + 15}px)`,
-        `left: calc(50vw - ${CANVAS_WIDTH / 2}px)`,
+        `top: calc(50vh - ${CANVAS_HEIGHT / 2}px)`,
+        `left: calc(50vw - ${CANVAS_WIDTH / 2}px - 50px)`,
         "background: black",
       ].join(';')}"></canvas>
       <div id="${LAYER_TIME_ID}" style="${[
         "position: fixed",
-        `width: ${CANVAS_WIDTH}px`,
-        "height: 30px",
-        `top: calc(50vh + ${CANVAS_HEIGHT / 2 - 15}px)`,
-        `left: calc(50vw - ${CANVAS_WIDTH / 2}px)`,
-        "line-height: 30px",
+        "width: 100px",
+        `height: ${CANVAS_HEIGHT}px`,
+        `top: calc(50vh - ${CANVAS_HEIGHT / 2}px)`,
+        `left: calc(50vw + ${CANVAS_WIDTH / 2}px - 50px)`,
         "background: #222",
         "color: white",
-        "overflow-x: auto",
-        "scrollbar-width: none",
+        "overflow-x: hidden",
+        "overflow-y: auto",
       ].join(';')}">
       </div>
     </div>`;
     document.getElementById(LAYER_ID).addEventListener('click', hideLayer);
-    document.getElementById(LAYER_CANVAS_ID).addEventListener('click', function(ev) {
+    document.getElementById(LAYER_CANVAS_ID).addEventListener('click', function (ev) {
       ev.stopPropagation();
     });
-    document.getElementById(LAYER_TIME_ID).addEventListener('click', function(ev) {
+    document.getElementById(LAYER_CANVAS_ID).addEventListener('contextmenu', function (ev) {
+      ev.stopPropagation();
+      ev.preventDefault();
+      if (videoFrames[frameIndex].bitmap)
+        previewBitmap(videoFrames[frameIndex].bitmap);
+    });
+    document.getElementById(LAYER_TIME_ID).addEventListener('click', function (ev) {
       ev.stopPropagation();
       for (const elem of document.getElementById(LAYER_TIME_ID).children) {
         elem.style.background = "#222";
@@ -103,23 +125,32 @@ function timeStr(num) {
   s = s - m * 60;
   let h = Math.floor(m / 60);
   m = m - h * 60;
-  return `${h ? `${h}:` : ''}${m}:${s}${ms ? ms.toFixed(3).toString().substring(1) : ''}`;
+  return `${h ? `${h}:` : ''}${m}:${s.toString().padStart(2, '0')}${ms ? ms.toFixed(3).toString().substring(1) : ''}`;
 }
 
 function renderTimeline() {
   const timeline = document.getElementById(LAYER_TIME_ID);
-  timeline.innerHTML = videoFrames.map((x, i) => `<span data-index="${i}" style="${[
-    "font-size: 16px",
+  timeline.innerHTML = videoFrames.map((x, i) => `<div data-index="${i}" style="${[
+    "font-size: 14px",
     "padding: 5px 10px",
     "cursor: pointer",
-  ].join(';')}">${timeStr(x.time)}</span>`).join('');
+  ].join(';')}">${timeStr(x.time)}</div>`).join('');
 
   renderFrame();
 }
 
-window.addEventListener('keydown', function(ev) {
+window.addEventListener('keydown', function (ev) {
   if (ev.ctrlKey && ev.altKey && ev.key === 'e') {
-    capture(document.querySelector('video'));
+    let video;
+    if (document.querySelector('bwp-video')) {
+      video = document.querySelector('bwp-video').shadowRoot.querySelector('video');
+    } else {
+      video = document.querySelector('video');
+    }
+    if (video)
+      capture(video);
+    else
+      console.error('video not found');
   }
 });
 
@@ -129,26 +160,68 @@ function capture(video) {
   videoElem = video;
   currentTime = video.currentTime;
   videoFrames = [];
+  createLayer();
 
-  // firefox-only, should use MediaStreamTrackProcessor instead on chrome
-  async function seekFrames() {
-    if (videoElem.ended || videoFrames.length >= MAX_FRAME_COUNT) {
-      renderTimeline();
-      return;
+  if (window.MediaStreamTrackProcessor) {
+    // webcodec
+    const track = videoElem.captureStream().getVideoTracks()[0];
+    const processor = new MediaStreamTrackProcessor(track);
+    const reader = processor.readable.getReader();
+
+    async function readChunk() {
+      const { done, value } = await reader.read();
+      if (value) {
+        const bitmap = await createImageBitmap(value);
+        videoFrames.push({
+          time: currentTime + value.timestamp / 1000000,
+          bitmap,
+        });
+        value.close();
+      }
+      if (done || videoFrames.length >= MAX_FRAME_COUNT) {
+        videoElem.pause();
+        renderTimeline();
+        return;
+      }
+      readChunk();
     }
 
-    const bitmap = await createImageBitmap(videoElem);
-    videoFrames.push({
-      time: video.currentTime,
-      bitmap,
-    });
+    readChunk();
+    videoElem.play();
+  } else if (HTMLVideoElement.prototype.requestVideoFrameCallback) {
+    // firefox only
+    async function seekFrames() {
+      if (videoElem.ended || videoFrames.length >= MAX_FRAME_COUNT) {
+        renderTimeline();
+        return;
+      }
 
-    videoElem.addEventListener('seeked', function() {
-      seekFrames();
-    }, { once: true });
-    videoElem.seekToNextFrame();
+      const bitmap = await createImageBitmap(videoElem);
+      videoFrames.push({
+        time: video.currentTime,
+        bitmap,
+      });
+
+      videoElem.addEventListener('seeked', function () {
+        seekFrames();
+      }, {
+        once: true
+      });
+      videoElem.seekToNextFrame();
+    }
+
+    seekFrames();
   }
+}
 
-  createLayer();
-  seekFrames();
+function previewBitmap(bitmap) {
+  const canvas = document.createElement('canvas');
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  const ctx = canvas.getContext('bitmaprenderer');
+  ctx.transferFromImageBitmap(bitmap);
+  canvas.toBlob(blob => {
+    const url = URL.createObjectURL(blob);
+    window.open(url, '_blank').focus();
+  });
 }
